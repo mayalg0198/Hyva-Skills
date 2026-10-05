@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+.Python
+env/
+venv/
+.venv/
+
+# Environment / Project-specific configs
+.hyva-upgrade.json
+
+# Test outputs & screenshots
+diffs/
+screenshots/
+*.png
+*.jpg
+*.webp
+
+# OS & Editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HyvaThemeUpgradeConfig",
+  "description": "Configuration file for Hyvä Theme Upgrade Toolkit — Universal",
+
+  "from_version": "1.4.3",
+  "to_version": "1.5.2",
+
+  "themePath": "app/design/frontend/Vendor/theme",
+  "vendorThemePath": "vendor/hyva-themes/magento2-default-theme",
+
+  "baselineUrl": "https://staging.example.com",
+  "targetUrl": "https://example.test",
+
+  "cssFreeze": false,
+  "strictCsp": false,
+
+  "locales": ["fr_FR", "en_US"],
+  "viewports": ["desktop", "mobile"],
+
+  "commands": {
+    "php": "php",
+    "magento": "bin/magento"
+  },
+
+  "commerce_versions": {
+    "admin-dashboard": { "from": "2.0.0", "to": "2.0.2" },
+    "cms":             { "from": "1.1.0", "to": "1.2.4" },
+    "image-editor":    { "from": "1.0.0", "to": "1.1.0" },
+    "media-optimization": { "from": "1.0.0", "to": "1.1.0" }
+  }
+}

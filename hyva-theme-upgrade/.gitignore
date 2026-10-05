@@ -1,0 +1,34 @@
+# Hyvä Theme Upgrade Toolkit — .gitignore
+
+# Project-specific config (contains URLs, credentials, project paths)
+# Copy from .hyva-upgrade.json.sample and fill in locally — never commit
+.hyva-upgrade.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments (if created inside this directory)
+.venv/
+venv/
+env/
+
+# Visual diff output (generated artifacts — project-specific)
+diffs/
+screenshots/
+*.png
+*.jpg
+*.webp
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editor artifacts
+.idea/
+.vscode/
+*.swp
+*.swo

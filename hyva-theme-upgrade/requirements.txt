@@ -1,0 +1,17 @@
+# Hyvä Theme Upgrade Toolkit — Python dependencies
+#
+# Install with:
+#   pip install -r .agents/skills/hyva-theme-upgrade/requirements.txt
+#
+# Or using a virtualenv (recommended on systems with managed Python):
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r .agents/skills/hyva-theme-upgrade/requirements.txt
+#
+# System Chrome/Chromium is also required for visual-diff.py:
+#   Ubuntu/Debian:  sudo apt install chromium-browser
+#   macOS:          brew install --cask google-chrome
+#   Alpine Linux:   apk add chromium
+
+# Required by visual-diff.py
+Pillow>=10.0.0
