@@ -7,7 +7,7 @@ Purpose: scan a Hyvä child theme for upgrade-compatibility issues. Version-awar
          CSP-mode-aware (strictCsp decides whether CSP findings are fatal).
 
 Usage (from anywhere inside the project):
-    python3 .agents/skills/hyva-theme-upgrade/scripts/audit-theme.py [options]
+    python3 <skill>/scripts/audit-theme.py [options]
 
 Options:
     --theme PATH             Hyvä child theme (default: config / auto-discovery)
@@ -76,8 +76,9 @@ def build_checks(from_ver: str, to_ver: str, strict_csp: bool = False, audit_csp
         "name": "Unsafe localStorage JSON.parse",
         "severity": "warning",
         "patterns": [
-            (re.compile(r"JSON\.parse\(.*?getItem\("),
-             "JSON.parse on storage returns null when the key is missing → runtime TypeError"),
+            # Skip guarded forms: JSON.parse(storage.getItem(k)) || {}  /  ?? {}
+            (re.compile(r"JSON\.parse\([^;]*?getItem\([^)]*\)\s*\)(?!\s*(?:\|\||\?\?))"),
+             "JSON.parse(getItem()) yields null for a missing key → TypeError on property access; add `|| {}`"),
         ],
     })
 
@@ -140,15 +141,16 @@ def build_checks(from_ver: str, to_ver: str, strict_csp: bool = False, audit_csp
             ),
         })
 
-    # ── CSP Guard (always checked: prevent PHP fatal error when CSP is disabled) ──
+    # ── CSP Guard: Hyvä injects $hyvaCsp into every template, so a bare call only
+    #    crashes where the template can also render on Luma / pre-$hyvaCsp Hyvä ──
     checks.append({
         "id": "unsafe_hyva_csp",
         "name": "CSP: $hyvaCsp call without isset()",
-        "severity": "fatal",
+        "severity": "warning",
         "custom_check": lambda c, vc: (
             hc.has_unguarded_hyva_csp(c),
-            "registerInlineScript() without an isset($hyvaCsp) guard crashes when $hyvaCsp is undefined. "
-            "Use: <?php isset($hyvaCsp) && $hyvaCsp->registerInlineScript(); ?>",
+            "registerInlineScript() without isset($hyvaCsp): fine in Hyvä-only templates; guard it if the "
+            "template can also render on Luma: <?php isset($hyvaCsp) && $hyvaCsp->registerInlineScript(); ?>",
         ),
     })
     checks.append({

@@ -1,6 +1,6 @@
 # Troubleshooting & Common Gotchas (Hyvä Theme Upgrade)
 
-This document contains deep-dive analysis, root causes, and verified fixes for the 17 most common edge cases, regressions, and architectural bugs encountered during Hyvä Theme upgrades and Tailwind CSS v3→v4 migrations.
+This document contains deep-dive analysis, root causes, and verified fixes for common edge cases, regressions, and architectural bugs encountered during Hyvä Theme upgrades and Tailwind CSS v3→v4 migrations.
 
 ---
 
@@ -185,6 +185,14 @@ This document contains deep-dive analysis, root causes, and verified fixes for t
 
 ---
 
+## CSP & cache gotchas (15–22)
+
+> These entries concern strict-CSP templates and Full Page Cache behaviour. They are kept here for
+> search, but the authoritative versions and tooling (`audit-csp.py`, `run.sh test-pressure`) live in
+> the companion skill **hyva-compat-csp-update**. Prefer that skill when the symptom is CSP- or FPC-related.
+
+---
+
 ### 15. Hyvä Strict CSP Evaluator & `x-for` Loop Scope Mechanics (`alpine3-csp.js`)
 * **Symptom:**
   - After migrating templates for CSP compliance, lists or autocomplete results show blank labels, missing titles, or throw:
@@ -336,5 +344,5 @@ This document contains deep-dive analysis, root causes, and verified fixes for t
   - **Cold cycle:** 5 concurrent requests immediately after `bin/magento cache:flush` (verify valid `script-src` header, no FPC race error).
   - **Warm cycle:** 40 repeated requests on the same URL (verify constant CSP header size, 0 hash accumulation).
   - Run both cycles twice.
-  - *Automated tool:* Use `./run.sh test-pressure <URL>` in the `hyva-compat-csp-update` skill.
+  - *Automated tool:* `bash <csp-skill>/run.sh test-pressure <local-url> --flush` (skill `hyva-compat-csp-update`, local env only).
 

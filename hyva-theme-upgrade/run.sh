@@ -60,7 +60,7 @@ show_help() {
     echo -e "  ${GREEN}layout${RESET} [options]     Audit layout XMLs, view.xml, theme.xml inheritance, package drift"
     echo -e "                         ${YELLOW}--fail-on-orphan${RESET}   Exit 1 if orphaned layout targets found"
     echo -e "  ${GREEN}visual${RESET} [path] [opts] Compare baseline vs target storefront with pixel-diff heatmap"
-    echo -e "                         ${YELLOW}--viewport desktop|tablet|mobile${RESET}"
+    echo -e "                         ${YELLOW}--viewports desktop,mobile${RESET}"
     echo -e "                         ${YELLOW}--height <px>${RESET}      Full page height override"
     echo -e "  ${GREEN}help${RESET}                 Show this help menu\n"
     echo -e "${BOLD}Examples:${RESET}"
@@ -80,6 +80,7 @@ run_doctor() {
 
     local errors=0
     local warnings=0
+    local FROM_V="" TO_V=""
 
     # 1. Python 3
     echo -n "Checking Python interpreter... "
@@ -96,9 +97,10 @@ run_doctor() {
         errors=$((errors + 1))
     fi
 
-    # 2. Config file
-    echo -n "Checking .hyva-upgrade.json... "
-    if [ -f ".hyva-upgrade.json" ]; then
+    # 2. Config file (--config <file> / $HYVA_CONFIG wins over the default name)
+    local CFG_FILE="${HYVA_CONFIG:-.hyva-upgrade.json}"
+    echo -n "Checking $CFG_FILE... "
+    if [ -f "$CFG_FILE" ]; then
         FROM_V="$(hyva_config_get from_version)"
         TO_V="$(hyva_config_get to_version)"
         if [ -n "$FROM_V" ] && [ -n "$TO_V" ]; then
@@ -109,6 +111,24 @@ run_doctor() {
         fi
     else
         echo -e "${YELLOW}⚠️  Not found (using default discovery). Copy from .hyva-upgrade.json.sample${RESET}"
+        warnings=$((warnings + 1))
+    fi
+
+    # 2b. Local-only files must not be committed by accident
+    echo -n "Checking $CFG_FILE is git-ignored... "
+    local repo_top cfg_dir
+    repo_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    cfg_dir="$(cd "$(dirname "$CFG_FILE")" 2>/dev/null && pwd -P || true)"
+    if [ ! -f "$CFG_FILE" ] || [ -z "$repo_top" ] || [ "${cfg_dir#"$repo_top"}" = "$cfg_dir" ]; then
+        echo -e "${GREEN}ℹ️  Skipped (no config, not a git repo, or the config lives outside this repo)${RESET}"
+    elif git check-ignore -q "$CFG_FILE"; then
+        echo -e "${GREEN}✅ Ignored${RESET}"
+    elif git ls-files --error-unmatch "$CFG_FILE" >/dev/null 2>&1; then
+        echo -e "${RED}❌ Tracked by git! It holds local URLs/paths. Untrack: git rm --cached $CFG_FILE${RESET}"
+        errors=$((errors + 1))
+    else
+        echo -e "${YELLOW}⚠️  Not ignored — could be committed by mistake${RESET}"
+        echo -e "   Fix (local only, nothing to commit): echo $CFG_FILE >> .git/info/exclude"
         warnings=$((warnings + 1))
     fi
 
@@ -170,6 +190,33 @@ print(f'{t_ver}|{m_ver}')
     else
         echo -e "${YELLOW}⚠️  installed.json missing — 3rd-party vendor template matching will be limited${RESET}"
         warnings=$((warnings + 1))
+    fi
+
+    # 5b. Hyvä Commerce module versions vs commerce_versions.<key>.to
+    if [ -f ".hyva-upgrade.json" ] && [ -f "vendor/composer/installed.json" ]; then
+        echo -n "Checking Hyvä Commerce module versions... "
+        COMMERCE_DRIFT=$(python3 - <<'PY2' 2>/dev/null || true
+import json
+cfg = json.load(open(".hyva-upgrade.json", encoding="utf-8")).get("commerce_versions") or {}
+d = json.load(open("vendor/composer/installed.json", encoding="utf-8"))
+pkgs = d.get("packages", d) if isinstance(d, dict) else d
+inst = {p.get("name"): p.get("version", "").lstrip("v") for p in pkgs}
+for key, rng in cfg.items():
+    want = (rng or {}).get("to", "")
+    have = inst.get(f"hyva-themes/commerce-module-{key}")
+    if have is None:
+        print(f"{key}: not installed (config expects {want})")
+    elif want and have != want:
+        print(f"{key}: installed {have}, config expects {want}")
+PY2
+)
+        if [ -z "$COMMERCE_DRIFT" ]; then
+            echo -e "${GREEN}✅ Match commerce_versions${RESET}"
+        else
+            echo -e "${YELLOW}⚠️  Drift (composer update pending, or fix commerce_versions):${RESET}"
+            echo "$COMMERCE_DRIFT" | sed 's/^/   • /'
+            warnings=$((warnings + 1))
+        fi
     fi
 
     # 6. Deployed version trailing newline check
@@ -275,12 +322,13 @@ run_audit() {
                 shift
                 ;;
             --config)
+                export HYVA_CONFIG="$2"   # read by _lib.sh (bash scanner) and hyva_common.py
                 theme_args+=("--config" "$2")
                 i18n_args+=("--config" "$2")
                 shift 2
                 ;;
             --theme)
-                scan_args+=("$2")
+                export HYVA_THEME_PATH="$2"   # theme root for the bash scanner; --module stays the sub-target
                 theme_args+=("--theme" "$2")
                 i18n_args+=("--theme" "$2")
                 shift 2
@@ -296,17 +344,17 @@ run_audit() {
     local exit_code=0
 
     echo -e "${BOLD}Running Pre-Flight Directive Scanner...${RESET}"
-    if ! "$SCRIPTS_DIR/scan-legacy-directives.sh" "${scan_args[@]}"; then
+    if ! bash "$SCRIPTS_DIR/scan-legacy-directives.sh" ${scan_args[@]+"${scan_args[@]}"}; then
         exit_code=1
     fi
 
     echo -e "\n${BOLD}Running AST & Feature-Parity Theme Auditor...${RESET}"
-    if ! python3 "$SCRIPTS_DIR/audit-theme.py" "${theme_args[@]}"; then
+    if ! python3 "$SCRIPTS_DIR/audit-theme.py" ${theme_args[@]+"${theme_args[@]}"}; then
         exit_code=1
     fi
 
     echo -e "\n${BOLD}Running i18n Translation Phrase Auditor...${RESET}"
-    if ! python3 "$SCRIPTS_DIR/audit-i18n.py" "${i18n_args[@]}"; then
+    if ! python3 "$SCRIPTS_DIR/audit-i18n.py" ${i18n_args[@]+"${i18n_args[@]}"}; then
         exit_code=1
     fi
 
@@ -317,15 +365,22 @@ run_audit() {
 CMD="${1:-help}"
 shift || true
 
+# --config <file> applies to every command (doctor included): export it for _lib.sh / hyva_common.py.
+_prev=""
+for _arg in "$@"; do
+    [ "$_prev" = "--config" ] && export HYVA_CONFIG="$_arg"
+    _prev="$_arg"
+done
+
 case "$CMD" in
     doctor)
-        run_doctor
+        run_doctor "$@"
         ;;
     audit)
         run_audit "$@"
         ;;
     diff)
-        "$SCRIPTS_DIR/diff-template.sh" "$@"
+        bash "$SCRIPTS_DIR/diff-template.sh" "$@"
         ;;
     vendor)
         python3 "$SCRIPTS_DIR/scan-vendor-diffs.py" "$@"
@@ -340,7 +395,7 @@ case "$CMD" in
         python3 "$SCRIPTS_DIR/scan-layout.py" "$@"
         ;;
     visual)
-        "$SCRIPTS_DIR/visual-diff.sh" "$@"
+        bash "$SCRIPTS_DIR/visual-diff.sh" "$@"
         ;;
     help|--help|-h)
         show_help

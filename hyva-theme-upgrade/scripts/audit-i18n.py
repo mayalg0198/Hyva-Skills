@@ -29,6 +29,11 @@ import hyva_common as hc  # noqa: E402
 PHRASE_RE = re.compile(r"""__\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")\s*[),]""")
 
 
+def has_text(phrase: str) -> bool:
+    """Phrases without a letter ('0123', '%1', '-') need no translation — skipped, but counted."""
+    return bool(re.search(r"[^\W\d_]", re.sub(r"%\d+", "", phrase)))
+
+
 def extract_phrases(text: str) -> list:
     """Return the translatable phrases of one template, escapes resolved."""
     phrases = []
@@ -56,9 +61,10 @@ def load_translations(csv_file: Path) -> set:
     with open(csv_file, "r", encoding="utf-8", errors="ignore", newline="") as handle:
         for row in csv.reader(handle):
             if row and len(row) >= 2:
-                phrase = row[0].strip()
+                # Magento matches CSV keys exactly — do not strip leading/trailing spaces.
+                phrase = row[0]
                 trans = row[1].strip()
-                if phrase and trans:
+                if phrase.strip() and trans:
                     keys.add(phrase)
     return keys
 
@@ -80,8 +86,10 @@ def main() -> None:
     theme_base = hc.resolve_theme_path(args.theme, config)
     i18n_dir = theme_base / "i18n"
     subpath = args.module or args.subpath
+    # --module accepts globs such as 'Amasty_*' (same as audit-theme / scan-vendor-diffs)
+    target_paths = sorted(p for p in theme_base.glob(subpath) if p.is_dir()) if subpath else [theme_base]
     target_path = theme_base / subpath if subpath else theme_base
-    if not target_path.is_dir():
+    if not target_paths:
         sys.stderr.write(f"❌ Audit target not found: {target_path}\n")
         sys.exit(2)
 
@@ -102,7 +110,10 @@ def main() -> None:
     print(f"Locales     : {', '.join(f.stem for f in csv_files) or 'None'}")
     print("=" * 80)
 
-    found = collect_phrases(theme_base, target_path)
+    found: dict = {}
+    for tp in target_paths:
+        for phrase, files in collect_phrases(theme_base, tp).items():
+            found.setdefault(phrase, []).extend(files)
     print(f"\nScanned templates. Distinct phrases found: {len(found)}\n")
     if not found:
         print("⚠️  0 phrases found — check the sub-path / theme (a clean report here would be meaningless).\n")
@@ -111,14 +122,16 @@ def main() -> None:
     for csv_file in csv_files:
         locale = csv_file.stem
         translations = load_translations(csv_file)
-        missing = {k: v for k, v in found.items() if k not in translations}
+        no_text = sum(1 for k in found if k not in translations and not has_text(k))
+        missing = {k: v for k, v in found.items() if k not in translations and has_text(k)}
         any_missing = any_missing or bool(missing)
         covered = len(found) - len(missing)
         pct = (covered / len(found) * 100) if found else 0.0
 
         print(f"--- 🌐 Locale [{locale}] ---")
         print(f"Explicit theme translations : {covered} / {len(found)} ({pct:.1f}%)")
-        print(f"Missing from {locale}.csv   : {len(missing)}")
+        print(f"Missing from {locale}.csv   : {len(missing)}"
+              + (f"  (+{no_text} without letters skipped, e.g. placeholders '0123')" if no_text else ""))
         if missing:
             shown = sorted(missing.items())[: args.limit]
             if len(missing) > args.limit:

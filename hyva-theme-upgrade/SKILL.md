@@ -1,99 +1,122 @@
 ---
 name: hyva-theme-upgrade
-description: Upgrades a Hyvä Theme child theme on Magento 2 / Adobe Commerce across major version bumps (e.g. 1.4.x to 1.5.x), migrates Tailwind CSS from v3 to v4, aligns templates with upstream vendor diffs, validates i18n dictionaries, and resolves CSS cascade or specificity regressions. Use when upgrading Hyvä Theme versions, auditing child theme templates for Alpine v3 compliance, checking vendor template diffs, or debugging regressions in product swatches, gallery, checkout, or search popups. Keywords hyva-theme, theme-upgrade, tailwind-v4, hyva-upgrade.json, diff-template, audit-theme, gallery.additional, ink-tokens.
+description: Use when upgrading a Hyvä child theme on Magento 2 / Adobe Commerce to a newer hyva-themes/magento2-default-theme or theme-module version (e.g. 1.4.x → 1.5.x), migrating its Tailwind CSS v3 config to v4 @theme, reconciling child template overrides with changed vendor templates, or debugging post-upgrade regressions (swatches not clickable, broken gallery, fg/ink tokens, @apply "Cannot resolve utility", BASE_URL is not defined, oxide/lightningcss ELF errors). Keywords hyva-upgrade.json, diff-template, audit-theme, gallery.additional.
 ---
 
 # Hyvä theme upgrade
 
-Version-aware runbook for upgrading any Hyvä child theme on Magento 2 / Adobe
-Commerce. This file is the entry point; the detail lives in `references/`.
+Runbook for moving a Hyvä child theme across Hyvä releases. Project settings
+(version range, theme path, locales, URLs) live in `.hyva-upgrade.json` at the
+Magento root.
 
-The upgrade workflow handles Hyvä Theme Module and Default Theme version bumps,
-the Tailwind CSS v3 to v4 transition, and Hyvä Commerce module alignment across
-all storefront page flows. Configuration and target versions are defined in
-`.hyva-upgrade.json`.
+**Not for:** strict-CSP conversion of templates (`registerInlineScript`,
+`alpine3-csp.js`, cache-pressure tests) — use `hyva-compat-csp-update`. Magento
+core upgrades (composer/PHP/DB) — only touch them as far as the Hyvä packages need.
 
-## References
+## Running the tooling
 
-- `references/upgrade-matrix-by-page.md` — the 7 Page Flows × 5-step SOP
-  (Homepage, Category/PLP, Product/PDP, Cart/Mini-cart, Checkout, Customer
-  Account, Search & CMS), template override checklists, and required event
-  contracts.
-- `references/troubleshooting-gotchas.md` — deep-dive root causes and verified
-  fixes for 17 upgrade regressions: PHP-rendered swatches, gallery breakage,
-  Tailwind v4 `@theme` migration traps, container musl/glibc issues, and poisoned
-  DI compilation.
-- `references/changelog-theme-upgrade.md` — upstream breaking changes across
-  Hyvä Theme releases from 1.3.x through 1.5.x, including CSS token shifts,
-  layout handle renames, and container changes.
-- `references/changelog-commerce-modules.md` — breaking changes and compatibility
-  notes for Hyvä Enterprise and Adobe Commerce modules (B2B, quick-order,
-  live-search).
+`<skill>` below means this skill's base directory (shown when the skill loads,
+e.g. `~/.claude/skills/hyva-theme-upgrade`). Always run from the Magento root and
+call through `bash`:
 
-## Upgrade workflow
+```bash
+cp <skill>/.hyva-upgrade.json.sample .hyva-upgrade.json   # once; then set from_version, to_version, themePath
+bash <skill>/run.sh doctor          # env + config health — run first, fix every ❌
+bash <skill>/run.sh help            # all flags
+```
 
-The upgrade follows a structured 5-phase execution sequence:
+Every command accepts `--config <file>`: keep the config outside the project (e.g. in
+`var/hyva-upgrade/`) and nothing needs excluding from git.
 
-1. **Changelog & impact analysis**: Run `./run.sh changelog` to fetch breaking
-   changes scoped precisely to `from_version` → `to_version`. Read the version
-   milestones to understand architectural shifts before modifying any templates.
-2. **Environment verification**: Install dependencies inside the development
-   container via `make npm_install`. Verify CSS build succeeds with `make build`
-   and launch the dev watcher.
-3. **Design tokens & Tailwind v4 migration**: If crossing 1.4.0+, migrate
-   `tailwind.config.js` to `@theme` CSS-first configuration. Alias legacy design
-   tokens (`fg` → `ink` for 1.5.2+) in theme CSS.
-4. **Template alignment by page flow**: Walk through the 7 page flows in order.
-   For each flow, execute the 5-step SOP: scan legacy directives, compare child
-   overrides against vendor diffs (`./run.sh vendor`), update layout XML references,
-   rebuild CSS, and run i18n audits.
-5. **Rebuild & verification**: Execute full DI compilation and static content
-   deployment (`make build && php bin/magento setup:di:compile`). Validate with
-   visual diffs and verify zero console errors and zero CLS.
+| Command | Purpose |
+|---|---|
+| `changelog [--module theme\|commerce]` | Breaking changes for `from_version` → `to_version` (from `references/changelog-*.md`) |
+| `audit [--module X] [--lint-php]` | Version-gated scan: Alpine v2 directives, `*-opacity-*`, `-fg` tokens, bfcache/anti-spam guards |
+| `vendor [--modified-only\|--identical-only] [--diff]` | Every child override vs its upstream template |
+| `diff <Module_Name/templates/…phtml>` | One override vs upstream (exit 1 = differs, normal) |
+| `layout [--fail-on-orphan]` | Layout XML references to removed/renamed blocks & containers |
+| `i18n [--locale fr_FR]` | `__('…')` phrases missing from `i18n/*.csv` |
+| `visual <path> [--viewport mobile]` | Screenshot + pixel diff `baselineUrl` vs `targetUrl` (needs Chrome + Pillow) |
 
-## CLI tooling
+**Build commands:** if the project `Makefile` has `npm_install` / `build` targets,
+use them. Otherwise run `npm ci && npm run build` in `<themePath>/web/tailwind`
+**inside the dev container** (`govard tool npm …`, `warden env exec …`) — never on
+the host when the container is Alpine/musl (corrupts `@tailwindcss/oxide`,
+`lightningcss`).
 
-The automated runner lives at `.agents/skills/hyva-theme-upgrade/run.sh`:
+## Workflow
 
-- `./run.sh doctor` — verify environment tooling (PHP, Node, Python, jq) and configuration.
-- `./run.sh changelog` — fetch breaking changes between configured version bounds.
-- `./run.sh audit` — pre-flight scan of the child theme for deprecated directives and tokens.
-- `./run.sh vendor` — inspect upstream vendor template diffs for customized overrides.
-- `./run.sh layout` — scan for orphaned layout XML references.
-- `./run.sh i18n` — audit multi-locale translation dictionary coverage.
-- `./run.sh visual-diff <slug>` — headless Chrome pixel diff against baseline URL.
+Work phase by phase; do not start a phase until the previous one's exit check passes.
 
-Before running any script, copy `.agents/skills/hyva-theme-upgrade/.hyva-upgrade.json.sample`
-to `.hyva-upgrade.json` in the project root and configure `from_version`, `to_version`,
-and `themePath`.
+1. **Impact analysis** — `run.sh changelog`, then read the matching sections of
+   `references/changelog-theme-upgrade.md`. List every ⚠️ BREAKING item that
+   touches a template the child theme overrides (`run.sh vendor --modified-only`).
+   *Exit:* written list of affected overrides.
+2. **Bump packages** (skip if `doctor` already reports the installed versions = `to_version`):
+   ```bash
+   composer require hyva-themes/magento2-default-theme:<to_version> hyva-themes/magento2-theme-module:<to_version> -W
+   diff <(jq .dependencies <vendorThemePath>/web/tailwind/package.json) <(jq .dependencies <themePath>/web/tailwind/package.json)
+   ```
+   Copy upstream versions of `tailwindcss`, `@tailwindcss/cli`, `@hyva-themes/hyva-modules`
+   into the child `package.json`, then reinstall npm deps in the container. Hyvä
+   Commerce modules: same `composer require`, versions from `commerce_versions`.
+   *Exit:* `run.sh doctor` clean, CSS build succeeds.
+3. **Tailwind & tokens** — only if `from_version` < 1.4.0 (child still has
+   `tailwind.config.js`): move it into `@theme` CSS. Crossing 1.5.2: add
+   `--color-ink` / `--color-ink-muted` aliases and migrate `-fg` utilities.
+   *Exit:* `run.sh audit` shows no token/opacity findings.
+4. **Templates, one page flow at a time** — copy `references/upgrade-matrix-by-page.md`
+   to `var/hyva-upgrade/matrix.md` (git-ignored) and track status there. Per flow: `run.sh diff` each override →
+   port upstream changes (keep project customisations) → `run.sh layout` → build CSS
+   → `run.sh i18n` → smoke test (add to cart, login, swatch on PDP).
+   Overrides that are identical to upstream (`vendor --identical-only`) are
+   candidates for deletion.
+5. **Recompile & verify** — in the container:
+   `bin/magento setup:upgrade && bin/magento cache:flush && bin/magento setup:di:compile`,
+   then (production mode only) `bin/magento setup:static-content:deploy -f <locales>`;
+   finally `run.sh visual <path>` on home, PLP, PDP, cart.
+   *Exit:* `run.sh audit` exit 0, no console errors, CLS 0 on PDP/PLP.
 
-## Architectural milestones
+## Git — the user commits, not you
 
-- **Hyvä 1.4.0 (Tailwind v4)**: Replaces `tailwind.config.js` with `@theme`
-  CSS-first syntax. Detect Tailwind version from `web/tailwind/package.json`.
-- **Hyvä 1.5.1 (Swatches & Gallery)**: Shifts swatch and gallery rendering to
-  server-rendered PHP. Requires `tailwindcss >= 4.3` and adopts the
-  `gallery.additional` layout container.
-- **Hyvä 1.5.2 (Design Tokens)**: Renames foreground color tokens from `fg` to
-  `ink`. Add `--color-ink` and `--color-ink-muted` aliases in theme CSS.
+- Never run `git add`, `git commit`, `git push`, `git stash` or `git reset` during
+  an upgrade, even at the end of a phase. Report the changed files
+  (`git status --short`) and let the user review and commit.
+- Local-only files created by this workflow must never be staged:
+  `.hyva-upgrade.json`, `var/hyva-upgrade/`, `var/diffs/` (visual diff output).
+  If `run.sh doctor` warns that `.hyva-upgrade.json` is not ignored, tell the user
+  the fix (`echo .hyva-upgrade.json >> .git/info/exclude`) instead of committing.
 
-## Pitfalls
+## Version milestones
 
-- Never run `npm` on a glibc host when the development container runs Alpine/musl.
-  Native binary mismatches corrupt `@tailwindcss/oxide`. Always run build tools
-  inside the container via `make npm_install`, `govard tool npm`, or `warden env exec`.
-- Do not modify `web/tailwind/**/*.css` during template alignment. Theme CSS
-  should be frozen once tokens are migrated; run `make build` to confirm output.
-- Never alter or rename core Hyvä custom events: `dispatchMessages`,
-  `reload-customer-section-data`, `toggle-cart`, `update-gallery-images`, and
-  `update-prices`. External modules and checkout rely on these exact event names.
-- Never remove required DOM hooks and selectors: `#product-addtocart-button`,
-  `.swatch-option`, and `[data-gallery-role=gallery]`.
-- Always flush Magento cache between `setup:upgrade` and `setup:di:compile`.
-  Compiling with stale DI metadata poisons the generated interceptors.
-- Check layout XML references after vendor updates: container renames (such as
-  `product.info.media` adjustments) can leave child layout blocks orphaned with
-  no visual error.
-- Strict CSP conversion is out of scope for general theme upgrades unless
-  explicitly configured. For strict CSP templates and `registerInlineScript`
-  wiring, use the companion skill `hyva-compat-csp-update`.
+| Crossing | What changes | Check |
+|---|---|---|
+| 1.4.0 | Tailwind v4: `tailwind.config.js` → `@theme` in CSS | `web/tailwind/package.json` `tailwindcss` major |
+| 1.4.7 | bfcache form-key refresh, anti-spam `isSubmitting` guard | `run.sh audit` |
+| 1.5.1 | PHP-rendered swatches & gallery, `.swatch-option`, `gallery.additional`, `tailwindcss >= 4.3` | Overrides of `Magento_Swatches`, `Magento_ConfigurableProduct`, `product/view/gallery.phtml` |
+| 1.5.2 | `fg` → `ink` color tokens (aliases kept) | `run.sh audit` |
+
+## Invariants — never break these
+
+- Custom events: `dispatchMessages`, `reload-customer-section-data`, `toggle-cart`,
+  `update-gallery-images`, `update-prices`.
+- DOM hooks: `#product-addtocart-button`, `.swatch-option`, `[data-gallery-role=gallery]`.
+- `cache:flush` between `setup:upgrade` and `setup:di:compile` (stale DI metadata
+  poisons generated interceptors).
+- If `cssFreeze` is `true` in `.hyva-upgrade.json`, do not edit `web/tailwind/**/*.css`
+  during phase 4; fix CSS only in phase 3.
+- A missing layout container (e.g. after `product.info.media` changes) orphans child
+  blocks silently — `run.sh layout` after every vendor bump.
+
+## When something breaks
+
+Match the symptom in `references/troubleshooting-gotchas.md` (Tailwind v4 cascade /
+`@layer` / `@apply`, swatches, gallery, CMS cache, ELF/musl, `deployed_version.txt`
+newline). Commerce module notes: `references/changelog-commerce-modules.md`.
+CSP- and FPC-related symptoms belong to `hyva-compat-csp-update`.
+
+## Changing the tooling
+
+After editing any script: `python3 -I <skill>/evals/run_evals.py` (offline, 21 checks on a
+generated fixture project). Overrides of modules whose `registration.php` lives under `src/`
+(e.g. `magento2-hyva-checkout`) must appear in `run.sh vendor` — the suite guards that.
