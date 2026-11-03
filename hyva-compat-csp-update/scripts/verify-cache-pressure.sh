@@ -1,123 +1,128 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# verify-cache-pressure.sh — Storefront CSP Verification Under Cache Pressure
+# verify-cache-pressure.sh — Storefront CSP verification under cache pressure
 # ==============================================================================
-# Implements the Sutunam BeBe9 Verification Protocol:
-#   - Cold cycle: 5 concurrent requests after FPC flush (verifies no FPC race).
-#   - Warm cycle: 40 repeated requests (verifies no dynamic hash accumulation).
-#   - Runs both cycles twice.
+#   - Cold cycle: 5 concurrent requests (after an FPC clean, if requested).
+#   - Warm cycle: 40 sequential requests — the CSP header must not grow.
+#   - Both cycles run twice. Exit 1 if any check fails.
+#
+# Usage:
+#   verify-cache-pressure.sh <url> [--flush | --flush-cmd "<cmd>"] [--insecure]
+#     --flush            run `bin/magento cache:clean full_page` before each cold cycle
+#     --flush-cmd "<c>"  custom clean command, e.g. "govard tool magento cache:clean full_page"
+#     --insecure         accept self-signed certificates (curl -k), for local envs
+# Without --flush/--flush-cmd nothing is cleaned and the cold cycle may hit a warm cache.
+# Only point this at a LOCAL/dev environment: it sends 90 requests.
 # ==============================================================================
-set -euo pipefail
+set -uo pipefail
 
-CYAN="\033[96m"
-GREEN="\033[92m"
-YELLOW="\033[93m"
-RED="\033[91m"
-BOLD="\033[1m"
-DIM="\033[2m"
-RESET="\033[0m"
+CYAN="\033[96m"; GREEN="\033[92m"; YELLOW="\033[93m"; RED="\033[91m"; BOLD="\033[1m"; DIM="\033[2m"; RESET="\033[0m"
 
-URL="${1:-}"
+URL=""; FLUSH_CMD=""; CURL_OPTS=(-sS -L --max-time 30)
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --flush) FLUSH_CMD="bin/magento cache:clean full_page"; shift ;;
+        --flush-cmd) FLUSH_CMD="${2:-}"; shift 2 ;;
+        --insecure|-k) CURL_OPTS+=(-k); shift ;;
+        -*) echo -e "${RED}❌ Unknown option: $1${RESET}" >&2; exit 2 ;;
+        *) URL="$1"; shift ;;
+    esac
+done
 
 if [ -z "$URL" ]; then
-    echo -e "${RED}❌ Please specify a storefront URL to test.${RESET}"
-    echo -e "Usage: ./run.sh test-pressure <https://my-store.local/path>"
+    echo -e "${RED}❌ Please specify a storefront URL to test.${RESET}" >&2
+    echo "Usage: run.sh test-pressure <https://store.test/path> [--flush | --flush-cmd \"<cmd>\"] [--insecure]" >&2
     exit 2
 fi
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+CSP_RE='^content-security-policy(-report-only)?:'
+TOTAL_FAILURES=0
 
 echo -e "${BOLD}${CYAN}==============================================================================${RESET}"
 echo -e "${BOLD}${CYAN}🧪 Hyvä CSP Verification Under Cache Pressure${RESET}"
 echo -e "${DIM}Target URL: $URL${RESET}"
 echo -e "${BOLD}${CYAN}==============================================================================${RESET}\n"
 
-run_cycle() {
-    local cycle_num="$1"
-    echo -e "${BOLD}--- Cycle #$cycle_num ---${RESET}"
-
-    # 1. Flush FPC for Cold Cycle
-    echo -n "Flushing Full Page Cache (FPC)... "
-    if [ -f "bin/magento" ]; then
-        bin/magento cache:clean full_page &>/dev/null || true
+flush_cache() {
+    echo -n "Cleaning Full Page Cache... "
+    if [ -z "$FLUSH_CMD" ]; then
+        echo -e "${YELLOW}skipped (no --flush / --flush-cmd) — cold cycle may be served from cache${RESET}"
+        return
+    fi
+    local out
+    if out=$(sh -c "$FLUSH_CMD" 2>&1); then
         echo -e "${GREEN}done${RESET}"
     else
-        echo -e "${YELLOW}skipped (bin/magento not found in pwd)${RESET}"
+        echo -e "${RED}failed${RESET}: $out"
+        TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
     fi
+}
 
-    # 2. Cold Cycle: 5 concurrent requests
-    echo -e "${CYAN}Executing Cold Cycle (5 concurrent requests)...${RESET}"
-    local pids=()
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
+run_cycle() {
+    local cycle_num="$1" i
+    echo -e "${BOLD}--- Cycle #$cycle_num ---${RESET}"
+    flush_cache
 
-    for i in {1..5}; do
-        curl -s -D "$tmp_dir/headers_cold_$i.txt" -o "$tmp_dir/body_cold_$i.html" "$URL" &
-        pids+=($!)
+    echo -e "${CYAN}Cold cycle (5 concurrent requests)...${RESET}"
+    for i in 1 2 3 4 5; do
+        curl "${CURL_OPTS[@]}" -D "$TMP_DIR/cold_$i.h" -o /dev/null "$URL" 2>"$TMP_DIR/cold_$i.err" &
     done
+    wait
 
-    # Wait for all 5 requests
-    for pid in "${pids[@]}"; do
-        wait "$pid" || true
-    done
-
-    # Validate Cold Responses
-    local cold_failures=0
-    for i in {1..5}; do
-        local csp_header
-        csp_header=$(grep -i "^content-security-policy:" "$tmp_dir/headers_cold_$i.txt" || true)
-        local status_code
-        status_code=$(head -n 1 "$tmp_dir/headers_cold_$i.txt" | awk '{print $2}')
-
-        if [ "$status_code" != "200" ]; then
-            echo -e "  ${RED}❌ Worker $i returned HTTP $status_code${RESET}"
-            cold_failures=$((cold_failures + 1))
-        elif [ -z "$csp_header" ]; then
-            echo -e "  ${RED}❌ Worker $i missing Content-Security-Policy header (FPC race condition detected!)${RESET}"
-            cold_failures=$((cold_failures + 1))
+    local cold_failures=0 status csp
+    for i in 1 2 3 4 5; do
+        if [ ! -s "$TMP_DIR/cold_$i.h" ]; then
+            echo -e "  ${RED}❌ Worker $i: no response ($(tr -d '\n' < "$TMP_DIR/cold_$i.err"))${RESET}"
+            cold_failures=$((cold_failures + 1)); continue
+        fi
+        # with -L the last status line is the final response
+        status=$(grep -E '^HTTP/' "$TMP_DIR/cold_$i.h" | tail -n 1 | awk '{print $2}')
+        csp=$(grep -iE "$CSP_RE" "$TMP_DIR/cold_$i.h" | tail -n 1 || true)
+        if [ "$status" != "200" ]; then
+            echo -e "  ${RED}❌ Worker $i returned HTTP $status${RESET}"; cold_failures=$((cold_failures + 1))
+        elif [ -z "$csp" ]; then
+            echo -e "  ${RED}❌ Worker $i: no Content-Security-Policy header (FPC race?)${RESET}"; cold_failures=$((cold_failures + 1))
         fi
     done
-
     if [ "$cold_failures" -eq 0 ]; then
-        echo -e "  ${GREEN}✅ Cold cycle passed! All 5 concurrent workers returned HTTP 200 with valid CSP headers.${RESET}"
+        echo -e "  ${GREEN}✅ Cold cycle passed (5 × HTTP 200 with a CSP header)${RESET}"
     else
-        echo -e "  ${RED}🚨 Cold cycle failed with $cold_failures error(s)! Check FPC response binding.${RESET}"
+        echo -e "  ${RED}🚨 Cold cycle: $cold_failures failure(s)${RESET}"
+        TOTAL_FAILURES=$((TOTAL_FAILURES + cold_failures))
     fi
 
-    # 3. Warm Cycle: 40 repeated requests
-    echo -e "\n${CYAN}Executing Warm Cycle (40 repeated requests to test hash stability)...${RESET}"
-    local first_csp_len=0
-    local hash_growth_detected=0
-
-    for i in {1..40}; do
-        local headers_file="$tmp_dir/headers_warm_$i.txt"
-        curl -s -D "$headers_file" -o /dev/null "$URL"
-        local csp_line
-        csp_line=$(grep -i "^content-security-policy:" "$headers_file" || true)
-        local current_len=${#csp_line}
-
-        if [ "$i" -eq 1 ]; then
-            first_csp_len="$current_len"
-        else
-            if [ "$current_len" -gt "$first_csp_len" ]; then
-                hash_growth_detected=$((hash_growth_detected + 1))
-            fi
+    echo -e "\n${CYAN}Warm cycle (40 sequential requests)...${RESET}"
+    local min_len="" max_len=0 len errors=0
+    for i in $(seq 1 40); do
+        if ! curl "${CURL_OPTS[@]}" -D "$TMP_DIR/warm.h" -o /dev/null "$URL" 2>/dev/null; then
+            errors=$((errors + 1)); continue
         fi
+        csp=$(grep -iE "$CSP_RE" "$TMP_DIR/warm.h" | tail -n 1 || true)
+        len=${#csp}
+        [ -z "$min_len" ] || [ "$len" -lt "$min_len" ] && min_len=$len
+        [ "$len" -gt "$max_len" ] && max_len=$len
     done
-
-    if [ "$hash_growth_detected" -gt 0 ]; then
-        echo -e "  ${RED}🚨 Dynamic script hash growth detected! CSP header size grew across warm requests.${RESET}"
-        echo -e "  ${YELLOW}⚠️  Check for nondeterministic PHP expressions (uniqid, time, rand) inside inline <script> blocks.${RESET}"
-    else
-        echo -e "  ${GREEN}✅ Warm cycle passed! CSP header length remained constant (${first_csp_len} bytes) across 40 requests.${RESET}"
+    if [ "$errors" -gt 0 ]; then
+        echo -e "  ${RED}❌ $errors request(s) failed${RESET}"; TOTAL_FAILURES=$((TOTAL_FAILURES + errors))
     fi
-
-    rm -rf "$tmp_dir"
+    if [ -n "$min_len" ] && [ "$max_len" -gt "$min_len" ]; then
+        echo -e "  ${RED}🚨 CSP header length varied ${min_len} → ${max_len} bytes: hashes accumulate.${RESET}"
+        echo -e "  ${YELLOW}   Look for uniqid/time/rand output inside inline <script> (audit: nondeterministic_script_hash).${RESET}"
+        TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
+    elif [ -n "$min_len" ]; then
+        echo -e "  ${GREEN}✅ Warm cycle passed (CSP header constant at ${max_len} bytes)${RESET}"
+    fi
     echo ""
 }
 
-# Run both cycles twice per protocol
 run_cycle 1
 run_cycle 2
 
 echo -e "${BOLD}${CYAN}==============================================================================${RESET}"
-echo -e "${BOLD}Verification completed!${RESET}"
-echo -e "${BOLD}${CYAN}==============================================================================${RESET}"
+if [ "$TOTAL_FAILURES" -gt 0 ]; then
+    echo -e "${RED}${BOLD}❌ $TOTAL_FAILURES check(s) failed.${RESET}"
+    exit 1
+fi
+echo -e "${GREEN}${BOLD}✅ All checks passed.${RESET}"

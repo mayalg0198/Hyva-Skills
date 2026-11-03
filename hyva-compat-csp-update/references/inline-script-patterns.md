@@ -6,7 +6,7 @@ In Magento 2 with Hyvä Theme under strict Content Security Policy, all inline `
 
 ## 1. Canonical Hyvä Nonce Registration
 
-Hyvä provides a built-in helper method on `Hyva\Theme\ViewModel\HyvaCsp` (or `$hyvaCsp` variable automatically injected into Hyvä templates):
+Hyvä provides `Hyva\Theme\ViewModel\HyvaCsp`; its template engine plugin injects it as `$hyvaCsp` into **every** template, like `$escaper`. Hyvä's own templates call it bare: `<?php $hyvaCsp->registerInlineScript() ?>`.
 
 ### The Standard Pattern:
 Place this line **immediately AFTER the closing `</script>` tag**:
@@ -33,16 +33,16 @@ Hyvä inspects PHP's output buffer (`ob_get_contents()`) and extracts the **last
 - If placed **inside** `<script>`, the closing `</script>` tag has not yet been outputted to the buffer. `extractLastElement` fails (returns `null`), no nonce or hash is generated, or worse, it captures an earlier script tag from preceding blocks and corrupts the buffer via `ob_clean()`.
 - If placed **immediately after `</script>`**, the element is completely flushed to the buffer, allowing Hyvä to calculate the SHA-256 hash or inject the nonce attribute cleanly.
 
-### Why `isset($hyvaCsp)` is Mandatory:
-In environments where Hyvä CSP module is disabled (or during theme fallback):
-- Calling `$hyvaCsp->registerInlineScript()` bare will trigger a fatal PHP error: `Undefined variable: hyvaCsp`.
-- Using `isset($hyvaCsp) && $hyvaCsp->registerInlineScript();` safely executes when CSP is active and silently passes when CSP is disabled.
+### When to use the `isset($hyvaCsp)` guard:
+- Not needed in Hyvä-only themes/modules: `$hyvaCsp` is always injected, and on stores that allow inline scripts `registerInlineScript()` just returns.
+- Needed in compat modules whose templates may also render on **Luma** or on theme-module versions that predate `$hyvaCsp` — there a bare call is a fatal `Call to a member function registerInlineScript() on null`.
+- The guarded form `isset($hyvaCsp) && $hyvaCsp->registerInlineScript();` is harmless everywhere, so the audit accepts both.
 
 ---
 
-## 2. Injected ViewModels in Custom Layouts
+## 2. Injected ViewModels in Custom Layouts (rarely needed)
 
-If creating a standalone Hyvä Compatibility module (`app/code/Vendor/ModuleHyvaCompatibility`), inject the Hyvä CSP ViewModel into your block via layout XML:
+`$hyvaCsp` is already available in templates rendered by Hyvä. Inject it explicitly only for templates rendered outside Hyvä's template engine (e.g. a custom renderer), via layout XML:
 
 ```xml
 <?xml version="1.0"?>

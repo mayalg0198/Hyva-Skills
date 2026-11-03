@@ -1,111 +1,80 @@
 # Hyvä Compatibility Module — Strict CSP Upgrade Toolkit
 
-> **A high-precision, automated toolkit and runbook for upgrading Hyvä compatibility modules, custom modules, and theme overrides to 100% Strict Content Security Policy (CSP) compliance.**
+> **An audit, fix and refactor toolkit for making Hyvä compatibility modules, custom modules and theme overrides run under strict Content Security Policy (Alpine CSP build, no `unsafe-eval`, no `unsafe-inline`).**
 
 ---
 
 ## 🛡️ Overview
 
-This toolkit provides an automated, version-safe workflow to prepare and upgrade any Hyvä compatibility module (e.g. `Amasty_*HyvaCompatibility`, `Mirasvit_*`, custom B2B modules, or community packages) for strict Content Security Policy (`alpine3-csp.js` & Magento CSP nonce mode) without breaking backwards compatibility.
+Hyvä's CSP Alpine build (`alpine3-csp.js`) resolves every directive value with `expression.split('.')` on the component scope: only plain property / method paths work. Inline `<script>` blocks must be registered with `$hyvaCsp->registerInlineScript()` right after `</script>` (nonce, or hash when the page is FPC-cacheable). Converted templates keep working on the regular Hyvä theme, so the conversion can land before CSP is switched on.
 
 ### Key Capabilities
 
-- **Deep AST / Pattern Auditing**: Detect unsafe `$hyvaCsp` calls, un-nonced inline scripts, ternary directives, eval-like patterns, and Alpine event handlers with direct arguments.
-- **Automated Script Nonce Injection**: Automatically wraps inline `<script>` tags with safe `isset($hyvaCsp) ? $hyvaCsp->registerInlineScript() : ''` nonces, preserving backward compatibility on Magento setups without Hyvä CSP module.
-- **Alpine.js CSP Refactoring Helper**: Suggests production-tested refactor recipes for converting expressions into `data-*` attributes, dot-path function references, and companion JS objects.
-- **FPC / Cache Pressure Verification**: Validates that inline script nonce registration does not poison Full Page Cache (FPC) or generate un-cacheable page variations under concurrent load.
+- **Audit** every directive the CSP evaluator cannot resolve: calls (with or without parentheses), negation, assignments / `++`, comparisons, logical operators, ternaries, object literals, literals (`true`, `0`, `'abc'`), arithmetic, inline functions, `x-for` over expressions or numbers.
+- **Script registration checks**: unregistered executable inline scripts (JSON / template scripts ignored), registration placed inside `<script>`, the non-standard `$viewModels->require(HyvaCsp::class)` form (warning, or fatal where the class does not exist), unguarded `$hyvaCsp` in Luma-compatible code.
+- **FPC hash growth**: script text that changes per render (`uniqid()`, `rand()`, `time()`… directly or through a variable).
+- **Blocked markup**: inline `on*="…"` event handlers and `javascript:` URLs.
+- **Safe fixer**: inserts `registerInlineScript()` after each unregistered script, moves misplaced calls, optional `isset()` form and normalisation of the `$viewModels` form, **refuses to register per-render scripts**, `php -l` with automatic revert, never touches `vendor/`, `generated/`, `var/`, `pub/static/`.
+- **Refactor recipes** per finding (`suggest`) and a cold / warm **FPC pressure test** of the CSP header for local environments.
 
 ---
 
-## ⚡ Quick Start (CLI Runner)
-
-All auditing, automated fixing, and refactoring recipes are wrapped in the unified `run.sh` CLI:
+## ⚡ Installation
 
 ```bash
-# 1. Verify environment and CSP packages
-./run.sh doctor
-
-# 2. Audit a module or template directory for CSP violations
-./run.sh audit path/to/module/templates
-# Or fail CI on warnings:
-./run.sh audit path/to/module/templates --fail-on-warning --output json
-
-# 3. Preview and automatically inject safe registerInlineScript nonces
-./run.sh fix-scripts path/to/module/templates --dry-run
-./run.sh fix-scripts path/to/module/templates
-
-# 4. View Before/After refactoring recipes for complex Alpine expressions
-./run.sh suggest path/to/template.phtml
-
-# 5. Stress test FPC cache stability under load
-./run.sh test-pressure https://mystore.local/catalog/product/view/id/123
+git clone https://github.com/mayalg0198/Hyva-Skills.git /tmp/hyva-skills
+cp -r /tmp/hyva-skills/hyva-compat-csp-update ~/.claude/skills/      # Claude Code
+# or: cp -r … .agents/skills/  /  ~/.gemini/config/skills/
+rm -rf /tmp/hyva-skills
+python3 -I ~/.claude/skills/hyva-compat-csp-update/evals/run_evals.py  # 44 offline checks
 ```
+
+Requirements: Bash 4+, Python 3.8+ (standard library only), `php` on PATH for the fixer's lint check (optional).
 
 ---
 
-## 🧭 5-Phase CSP Migration Workflow
+## 🛠️ CLI (run from the Magento root)
 
-```mermaid
-graph TD
-    A["Phase 1: Deep AST Audit<br/>(audit-csp.py)"] --> B["Phase 2: Script Nonce Injection<br/>(fix-inline-scripts.py)"]
-    B --> C["Phase 3: Alpine Dot-Path Refactor<br/>(data-* & getters)"]
-    C --> D["Phase 4: Companion JS Extraction<br/>(optional for large JS)"]
-    D --> E["Phase 5: Runtime Browser Gate<br/>(0 eval errors)"]
+```bash
+S=~/.claude/skills/hyva-compat-csp-update      # wherever the skill is installed
+
+bash $S/run.sh doctor
+bash $S/run.sh audit app/code/Vendor/ModuleHyvaCompatibility [--fail-on-warning] [--output json]
+bash $S/run.sh fix-scripts app/code/Vendor/ModuleHyvaCompatibility --dry-run     # always first
+bash $S/run.sh fix-scripts app/code/Vendor/ModuleHyvaCompatibility [--guarded] [--normalize]
+bash $S/run.sh suggest app/code/Vendor/ModuleHyvaCompatibility/view/frontend/templates/x.phtml
+bash $S/run.sh test-pressure https://store.test/ --flush-cmd "govard tool magento cache:clean full_page" --insecure
 ```
 
-### 1. Audit & Discovery (`audit`)
-Scans target `.phtml` files for CSP antipatterns:
-- Direct `$hyvaCsp->registerInlineScript()` calls lacking `isset($hyvaCsp)` check.
-- Inline `<script>` tags missing CSP nonce injection.
-- Alpine event directives with argument calls (e.g. `@click="select(item.id)"`).
-- Ternary expressions inside `:class` or `:style`.
-- Inline functions in `x-data`.
+`test-pressure` sends 90 requests: point it at a local environment only.
 
-### 2. Nonce Injection (`fix-scripts`)
-Safely transforms:
+---
+
+## 🧭 Workflow
+
+1. `audit` one module or page flow.
+2. `fix-scripts --dry-run`, review, apply. Scripts it lists as **not registered** contain per-render values: move them to `data-*` first.
+3. `suggest` each remaining template and refactor (getters, `data-*`, `Alpine.data` factories).
+4. `audit --fail-on-warning` until it exits 0.
+5. Browser: no `Alpine is unable to interpret`, no `Refused to execute inline script`, no `unsafe-eval` in the console, on the CSP theme and on the regular theme.
+
+Registration, for reference:
+
 ```php
 <script>
-    function initSomething() { ... }
+    function initFoo() { return { open: false, toggle() { this.open = !this.open; } }; }
+    window.addEventListener('alpine:init', () => Alpine.data('initFoo', initFoo), {once: true});
 </script>
-```
-Into backwards-compatible, CSP-compliant nonced script:
-```php
-<script <?= isset($hyvaCsp) ? $hyvaCsp->registerInlineScript() : '' ?>>
-    function initSomething() { ... }
-</script>
+<?php $hyvaCsp->registerInlineScript() ?>
 ```
 
-### 3. Alpine.js CSP Refactoring (`suggest`)
-Under `alpine3-csp.js`, direct evaluation of arguments in HTML directives causes CSP violations. Use `suggest` to generate idiomatic transformations:
-- **Pass data via HTML5 data-attributes**:
-  ```html
-  <!-- Before -->
-  <button @click="addToCart(product.id, 'buy_now')">
-  <!-- After -->
-  <button :data-product-id="product.id" data-action="buy_now" @click="handleAddToCart">
-  ```
-- **Read data via event / element**:
-  ```javascript
-  handleAddToCart(event) {
-      const productId = event.currentTarget.dataset.productId;
-      const action = event.currentTarget.dataset.action;
-      ...
-  }
-  ```
+Use `<?php isset($hyvaCsp) && $hyvaCsp->registerInlineScript() ?>` in modules that may also render on Luma or on theme-module versions without `HyvaCsp`.
 
 ---
 
-## 📚 References & Guides
+## 📚 References
 
-Explore deep-dive documentation in the `references/` directory:
-- [Alpine v3 CSP Rules & Migration Patterns](references/alpine3-csp-rules.md)
-- [CSP Troubleshooting & Real-World Gotchas](references/csp-troubleshooting-gotchas.md)
-- [Inline Script Injection Patterns](references/inline-script-patterns.md)
-
----
-
-## 🛠️ Requirements
-
-- **Bash** 4.0+
-- **Python** 3.8+ (standard library only, no pip dependencies required for core auditing)
-- **Magento 2.4.x** with Hyvä Themes
+- [`SKILL.md`](SKILL.md) — agent workflow and the full rule table
+- [Alpine v3 CSP rules & migration patterns](references/alpine3-csp-rules.md)
+- [CSP troubleshooting & gotchas](references/csp-troubleshooting-gotchas.md)
+- [Inline script registration patterns](references/inline-script-patterns.md)

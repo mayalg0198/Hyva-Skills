@@ -20,10 +20,11 @@ expression.split('.').reduce((scope, key) => scope?.[key], currentScope)
    <img :src="item.thumbnail" :alt="item.title">
    <div :id="section.code"></div>
    ```
-2. **Zero-Argument Function Calls & Handlers:**
+2. **Method references (no parentheses):** the method is called automatically with the event.
    ```html
    <button @click="submitForm">Submit</button>
-   <button @click="toggleMenu()">Toggle</button>
+   <button @click="toggleMenu">Toggle</button>
+   <!-- ❌ @click="toggleMenu()" fails: the evaluator looks up a key literally named "toggleMenu()" -->
    ```
 3. **Native `x-for` Loop Scopes:**
    Inside `x-for="item in items"`, `item` is placed on Alpine's scope stack (`completeScope`). Direct dot-path member accesses on `item` work natively with zero overhead!
@@ -199,6 +200,8 @@ expression.split('.').reduce((scope, key) => scope?.[key], currentScope)
           }
       };
   }
+  // Required: the CSP build resolves x-data names only from Alpine.data(), not from window
+  window.addEventListener('alpine:init', () => Alpine.data('initComponent', initComponent), {once: true});
   ```
 
 ---
@@ -241,11 +244,12 @@ A method on the root component evaluates in root context (`this`). It does NOT a
 
 In nested structures (mega menus, permission trees, category hierarchies), terminal leaf nodes frequently lack a `children` array:
 
-* **Fragile (Triggers fatal TypeError under CSP):**
+* **Fragile (TypeError when the node itself or its `children` is missing):**
   ```javascript
-  if (!tree.children || !tree.children.length) return;
-  return this[key].children.length;
+  return this[key].children.length;      // this[key] undefined → crash
+  return node.children.length;           // leaf without children → crash
   ```
+  (`if (!tree.children || !tree.children.length)` is already safe as long as `tree` exists.)
 * **Safe & Modern (Optional Chaining):**
   ```javascript
   if (!tree?.children?.length) return;
