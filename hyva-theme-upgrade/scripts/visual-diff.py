@@ -27,7 +27,7 @@ try:
 except ImportError:
     sys.stderr.write(
         "❌ Pillow is required for visual-diff.\n"
-        "   pip install -r .agents/skills/hyva-theme-upgrade/requirements.txt\n"
+        f"   pip install -r {Path(__file__).resolve().parent.parent / 'requirements.txt'}\n"
         "   (on managed Python: python3 -m venv .venv && . .venv/bin/activate first)\n"
     )
     sys.exit(2)
@@ -68,7 +68,9 @@ def find_chrome():
 def capture_screenshot(chrome_bin, url, output_path, width, height, wait_ms=4000):
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
+    # Remove any previous capture so a failed run cannot be compared silently
+    output_path.unlink(missing_ok=True)
+
     cmd = [
         chrome_bin,
         "--headless=new",
@@ -82,7 +84,7 @@ def capture_screenshot(chrome_bin, url, output_path, width, height, wait_ms=4000
     ]
     
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if not output_path.exists() or output_path.stat().st_size == 0:
+    if res.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
         raise RuntimeError(f"Failed to capture screenshot for {url}.\nStderr: {res.stderr[:500]}")
     return output_path
 
@@ -571,10 +573,10 @@ def main():
     rel_path = args.path.lstrip("/")
     if rel_path.startswith("http://") or rel_path.startswith("https://"):
         # Strip origin
-        for prefix in [args.baseline, args.target]:
-            if rel_path.startswith(prefix):
-                rel_path = rel_path[len(prefix):].lstrip("/")
-                break
+        # Keep only path + query, whatever the host (baseline, target or another one)
+        from urllib.parse import urlparse
+        parsed = urlparse(rel_path)
+        rel_path = parsed.path.lstrip("/") + (f"?{parsed.query}" if parsed.query else "")
 
     baseline_url = f"{args.baseline.rstrip('/')}/{rel_path}"
     target_url = f"{args.target.rstrip('/')}/{rel_path}"

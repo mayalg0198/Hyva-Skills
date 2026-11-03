@@ -25,8 +25,10 @@ hyva_find_root() {
 # Read a top-level scalar from .hyva-upgrade.json (python3 → grep fallback).
 # Prints "" when the key or the file is missing. Booleans print true/false.
 hyva_config_get() {
-    local key="$1" cfg
-    for cfg in .hyva-upgrade.json hyva-upgrade.json; do
+    local key="$1" cfg candidates=".hyva-upgrade.json hyva-upgrade.json"
+    # $HYVA_CONFIG (set by run.sh --config) wins over the default file names
+    [ -n "${HYVA_CONFIG:-}" ] && candidates="$HYVA_CONFIG"
+    for cfg in $candidates; do
         [ -f "$cfg" ] || continue
         if command -v python3 >/dev/null 2>&1; then
             python3 - "$cfg" "$key" 2>/dev/null <<'PY'
@@ -40,7 +42,8 @@ if isinstance(v, bool):
 print("" if v is None or isinstance(v, (dict, list)) else v)
 PY
         else
-            grep -m1 "\"$key\"" "$cfg" | cut -d'"' -f4
+            # strings and booleans/numbers: "key": "v"  |  "key": true
+            grep -m1 "\"$key\"" "$cfg" | sed -E 's/^[^:]*:[[:space:]]*"?([^",}]*)"?.*/\1/'
         fi
         return 0
     done

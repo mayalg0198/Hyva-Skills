@@ -52,11 +52,18 @@ if [ -z "$THEME_BASE" ] || [ ! -d "$THEME_BASE" ]; then
     exit 2
 fi
 
-TARGET_DIR="${TARGET_INPUT:-$THEME_BASE}"
-if [ "$TARGET_DIR" != "$THEME_BASE" ] && [ ! -d "$TARGET_DIR" ]; then
-    TARGET_DIR="$THEME_BASE/$TARGET_DIR"
+# TARGET_INPUT may be a directory, a module name, or a glob such as 'Amasty_*'.
+TARGET_DIRS=()
+if [ -z "$TARGET_INPUT" ]; then
+    TARGET_DIRS=("$THEME_BASE")
+else
+    for d in $TARGET_INPUT; do [ -d "$d" ] && TARGET_DIRS+=("$d"); done
+    if [ ${#TARGET_DIRS[@]} -eq 0 ]; then
+        for d in "$THEME_BASE"/$TARGET_INPUT; do [ -d "$d" ] && TARGET_DIRS+=("$d"); done
+    fi
 fi
-if [ ! -d "$TARGET_DIR" ]; then
+TARGET_DIR="${TARGET_INPUT:-$THEME_BASE}"
+if [ ${#TARGET_DIRS[@]} -eq 0 ]; then
     echo "❌ Scan target not found: $TARGET_DIR" >&2
     exit 2
 fi
@@ -72,7 +79,7 @@ WARNINGS_FOUND=0
 
 # 1. x-spread (removed in Alpine v3 → fatal)
 echo -n "1. Deprecated 'x-spread' directives... "
-OUT=$(grep -rn "x-spread" "$TARGET_DIR" --include="*.phtml" 2>/dev/null || true)
+OUT=$(grep -rn "x-spread" "${TARGET_DIRS[@]}" --include="*.phtml" 2>/dev/null || true)
 if [ -n "$OUT" ]; then
     echo -e "\n❌ FATAL 'x-spread' usage (use x-bind=\"obj\"):"; echo "$OUT"
     ERRORS_FOUND=$((ERRORS_FOUND + 1))
@@ -97,19 +104,26 @@ while IFS= read -r file; do
         # 3. Defined in the upstream vendor module?
         REL_FILE="${file#"$THEME_BASE"/}"
         MOD_NAME="$(echo "$REL_FILE" | cut -d'/' -f1)"
-        if [ -n "$MOD_NAME" ] && find vendor -maxdepth 4 -type d -iname "*${MOD_NAME#*_}*" 2>/dev/null | xargs -I{} grep -rnq "eventListeners:" "{}" --include="*.phtml" --include="*.js" 2>/dev/null; then
-            continue
+        IN_VENDOR=0
+        if [ -n "$MOD_NAME" ]; then
+            # Any matching vendor dir defining it is enough (stop at first hit)
+            while IFS= read -r vdir; do
+                if grep -rlq "eventListeners:" "$vdir" --include="*.phtml" --include="*.js" 2>/dev/null; then
+                    IN_VENDOR=1; break
+                fi
+            done < <(find vendor -mindepth 2 -maxdepth 3 -type d -iname "*${MOD_NAME#*_}*" -not -path "*/node_modules/*" 2>/dev/null)
         fi
+        [ $IN_VENDOR -eq 1 ] && continue
         [ $RISKY -eq 0 ] && echo
         echo "⚠️  $file uses x-bind=\"eventListeners\" but 'eventListeners:' is not defined in this module or vendor — verify against component data factory."
         RISKY=$((RISKY + 1))
     fi
-done < <(find "$TARGET_DIR" -type f -name "*.phtml")
+done < <(find "${TARGET_DIRS[@]}" -type f -name "*.phtml")
 if [ $RISKY -eq 0 ]; then echo "✅ Clean"; else WARNINGS_FOUND=$((WARNINGS_FOUND + RISKY)); fi
 
 # 3. $el.__x (Alpine v2 internal API → fatal)
 echo -n "3. Legacy Alpine v2 '\$el.__x'... "
-OUT=$(grep -rn '\$el\.__x' "$TARGET_DIR" --include="*.phtml" 2>/dev/null || true)
+OUT=$(grep -rn '\$el\.__x' "${TARGET_DIRS[@]}" --include="*.phtml" 2>/dev/null || true)
 if [ -n "$OUT" ]; then
     echo -e "\n❌ FATAL '\$el.__x' usage:"; echo "$OUT"
     ERRORS_FOUND=$((ERRORS_FOUND + 1))
@@ -119,7 +133,7 @@ fi
 
 # 4. initConfigurableOptions (replaced by PHP-rendered swatches in 1.5.1)
 echo -n "4. Obsolete 'initConfigurableOptions'... "
-OUT=$(grep -rn "initConfigurableOptions" "$TARGET_DIR" --include="*.phtml" 2>/dev/null || true)
+OUT=$(grep -rn "initConfigurableOptions" "${TARGET_DIRS[@]}" --include="*.phtml" 2>/dev/null || true)
 if [ -n "$OUT" ]; then
     echo -e "\n⚠️  Obsolete in Hyvä >= 1.5.1 (PHP-rendered swatches) — review against the vendor template:"; echo "$OUT"
     WARNINGS_FOUND=$((WARNINGS_FOUND + 1))
@@ -163,7 +177,8 @@ fi
 
 # 7. .children.length without optional chaining (TypeError on leaf nodes)
 echo -n "7. Unguarded '.children.length' in templates... "
-OUT=$(grep -rn '\.children\.length' "$TARGET_DIR" --include="*.phtml" 2>/dev/null | grep -vF '?.children?.length' || true)
+OUT=$(grep -rn '\.children\.length' "${TARGET_DIRS[@]}" --include="*.phtml" 2>/dev/null | grep -vF '?.children?.length' \
+    | grep -vE '\.children[[:space:]]*&&|![[:space:]]*[A-Za-z0-9_$.]*\.children[[:space:]]*\|\||\.children\)[[:space:]]*\?' || true)
 if [ -n "$OUT" ]; then
     echo -e "\n⚠️  Leaf nodes have no 'children' — guard with '?.' to avoid a fatal TypeError:"; echo "$OUT"
     WARNINGS_FOUND=$((WARNINGS_FOUND + 1))

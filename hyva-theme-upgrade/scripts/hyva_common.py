@@ -112,6 +112,7 @@ def load_config(explicit: str | None = None, quiet: bool = False) -> dict:
     Load .hyva-upgrade.json from `explicit` or the project root.
     Invalid JSON is reported (never silently ignored) and yields {}.
     """
+    explicit = explicit or os.environ.get("HYVA_CONFIG") or None
     candidates = [Path(explicit)] if explicit else [find_project_root() / n for n in CONFIG_NAMES]
     for path in candidates:
         if not path.is_file():
@@ -257,13 +258,20 @@ def build_vendor_module_index() -> dict:
                 pkg_dir = Path(install_path)
         else:
             pkg_dir = Path("vendor") / pkg.get("name", "")
-        reg = pkg_dir / "registration.php"
-        if not reg.is_file():
-            continue
-        text = reg.read_text(encoding="utf-8", errors="ignore")
-        for name in re.findall(r"ComponentRegistrar::MODULE,\s*['\"]([^'\"]+)['\"]", text):
-            index.setdefault(name, []).append(pkg_dir)
-            index.setdefault(name.lower().replace("_", ""), []).append(pkg_dir)
+        # registration.php is usually at the package root, but many packages keep the
+        # module under src/ and declare it in autoload.files ("src/registration.php").
+        # The module root (where etc/ and view/ live) is the registration file's directory.
+        candidates = [f for f in (pkg.get("autoload") or {}).get("files", []) if f.endswith("registration.php")]
+        candidates += ["registration.php", "src/registration.php"]
+        for rel in dict.fromkeys(candidates):
+            reg = pkg_dir / rel
+            if not reg.is_file():
+                continue
+            text = reg.read_text(encoding="utf-8", errors="ignore")
+            for name in re.findall(r"ComponentRegistrar::MODULE,\s*['\"]([^'\"]+)['\"]", text):
+                for key in (name, name.lower().replace("_", "")):
+                    if reg.parent not in index.setdefault(key, []):
+                        index[key].append(reg.parent)
     return index
 
 
@@ -311,7 +319,7 @@ def resolve_vendor_template(rel: Path, vendor_theme: Path, module_index: dict):
                 for sub in _TEMPLATE_ROOTS:
                     cand = pkg_dir / sub / tpl_sub
                     if cand.exists():
-                        return cand, pkg_dir.name
+                        return cand, (pkg_dir.parent.name if pkg_dir.name == "src" else pkg_dir.name)
 
     return None, "Not Found (Custom Only)"
 
@@ -361,10 +369,14 @@ def inline_script_stats(content: str) -> tuple:
 
 def has_unguarded_hyva_csp(content: str) -> bool:
     """registerInlineScript() without isset($hyvaCsp) → fatal when CSP is off."""
-    return any(
-        "$hyvaCsp->registerInlineScript" in line and "isset($hyvaCsp)" not in line
-        for line in content.splitlines()
-    )
+    # The guard may sit on its own line: `if (isset($hyvaCsp)) {` ⏎ `$hyvaCsp->register…`
+    lines = content.splitlines()
+    for i, line in enumerate(lines):
+        if "$hyvaCsp->registerInlineScript" in line:
+            window = "\n".join(lines[max(0, i - 3):i + 1])
+            if "isset($hyvaCsp)" not in window and "$hyvaCsp !== null" not in window:
+                return True
+    return False
 
 
 def has_inline_event_handlers(content: str) -> bool:

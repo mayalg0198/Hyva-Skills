@@ -178,9 +178,10 @@ def audit_package_drift(theme_dir: Path, vendor_theme: Path, to_ver: str) -> lis
     to_v = hc.parse_ver(to_ver)
     if to_v >= (1, 5, 1):
         # Hyvä 1.5.1+ requires Tailwind 4.3 for logical properties
-        def get_major_minor(s: str) -> tuple[int, int]:
+        def get_major_minor(s: str):
+            # None when the dependency is absent or unversioned ("latest", "workspace:*")
             nums = re.findall(r"\d+", s)
-            return (int(nums[0]), int(nums[1])) if len(nums) >= 2 else (0, 0)
+            return (int(nums[0]), int(nums[1])) if len(nums) >= 2 else None
 
         cli_mm = get_major_minor(tw_cli)
         core_mm = get_major_minor(tw_core)
@@ -254,7 +255,17 @@ def main() -> None:
     # Also include layout files from installed hyva-themes modules
     extra_vendor_layouts = sorted(Path("vendor/hyva-themes").glob("**/view/frontend/layout/*.xml"))
 
-    all_vendor_layouts = vendor_layouts + extra_vendor_layouts
+    # Blocks may be declared by any installed module (Magento core, 3rd-party, app/code),
+    # not only by Hyvä packages — index them all to avoid false "orphan" reports.
+    module_dirs = {d.resolve() for dirs in hc.build_vendor_module_index().values() for d in dirs}
+    module_dirs |= {d.resolve() for d in Path("app/code").glob("*/*") if d.is_dir()}
+    module_layouts = []
+    for mdir in sorted(module_dirs):
+        for area in ("frontend", "base"):
+            module_layouts += sorted((mdir / "view" / area).glob("layout/*.xml"))
+            module_layouts += sorted((mdir / "view" / area).glob("page_layout/*.xml"))
+
+    all_vendor_layouts = vendor_layouts + extra_vendor_layouts + module_layouts
     v_blocks, v_containers = collect_declared_names(all_vendor_layouts)
     c_blocks, c_containers = collect_declared_names(child_layouts)
 

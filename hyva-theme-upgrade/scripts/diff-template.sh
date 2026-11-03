@@ -34,17 +34,26 @@ VENDOR_BASE="${HYVA_VENDOR_PATH:-$(hyva_config_get vendorThemePath)}"
 VENDOR_BASE="${VENDOR_BASE:-vendor/hyva-themes/magento2-default-theme}"
 
 INPUT_PATH="$1"
-CLEAN_PATH="${INPUT_PATH#"$THEME_BASE"/}"
+# Accept absolute paths too: strip the absolute theme prefix, then the relative one.
+THEME_ABS="$(cd "$THEME_BASE" && pwd)"
+CLEAN_PATH="${INPUT_PATH#"$THEME_ABS"/}"
+CLEAN_PATH="${CLEAN_PATH#"$THEME_BASE"/}"
 CLEAN_PATH="${CLEAN_PATH#./}"
 
 THEME_FILE="$THEME_BASE/$CLEAN_PATH"
 if [ ! -f "$THEME_FILE" ]; then
     # Fall back to a basename search inside the theme.
-    FOUND="$(find "$THEME_BASE" -type f -name "$(basename "$INPUT_PATH")" 2>/dev/null | head -n 1)"
-    if [ -z "$FOUND" ]; then
+    MATCHES="$(find "$THEME_BASE" -type f -name "$(basename "$INPUT_PATH")" 2>/dev/null)"
+    if [ -z "$MATCHES" ]; then
         echo "❌ Theme file does not exist: $THEME_FILE" >&2
         exit 2
     fi
+    if [ "$(echo "$MATCHES" | wc -l)" -gt 1 ]; then
+        echo "❌ Ambiguous file name — several templates match. Pass the path from the theme root:" >&2
+        echo "$MATCHES" | sed "s|^$THEME_BASE/|   |" >&2
+        exit 2
+    fi
+    FOUND="$MATCHES"
     THEME_FILE="$FOUND"
     CLEAN_PATH="${THEME_FILE#"$THEME_BASE"/}"
     echo "ℹ️  Resolved to: $THEME_FILE"
