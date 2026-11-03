@@ -40,9 +40,10 @@ This reference documents the root causes, real-world symptoms, and verified fixe
     Undefined variable: hyvaCsp
     ```
 * **Root Cause:**
-  - Calling `$hyvaCsp->registerInlineScript()` bare assumes `$hyvaCsp` is always defined. If the Hyvä CSP module is disabled or if the template is rendered in an area without the ViewModel, `$hyvaCsp` is `null` or undefined.
-* **Fix:**
-  - Always guard with `isset($hyvaCsp)`:
+  - Hyvä's PHP template engine plugin (`Hyva\Theme\Plugin\TemplateEngine\PhpPlugin`) injects `$hyvaCsp` into every template it renders, so on a current Hyvä store a bare call is fine (Hyvä's own templates use it). `$hyvaCsp` is undefined only when the template is rendered by a **Luma** theme (compat module shared with Luma) or on a theme-module version that predates `$hyvaCsp`.
+  - On non-CSP stores `registerInlineScript()` simply returns (inline scripts allowed) — it never needs to be removed.
+* **Fix (modules that must also run on Luma / old Hyvä):**
+  - Guard with `isset($hyvaCsp)`:
     ```php
     <?php isset($hyvaCsp) && $hyvaCsp->registerInlineScript(); ?>
     <!-- or -->
@@ -207,12 +208,12 @@ This reference documents the root causes, real-world symptoms, and verified fixe
     </div>
 
     <script>
-        Alpine.data('myComponent', () => ({
+        window.addEventListener('alpine:init', () => Alpine.data('myComponent', () => ({
             token: null,
             init() {
                 this.token = this.$el.dataset.token;
             }
-        }));
+        })), {once: true});
     </script>
     <?php isset($hyvaCsp) && $hyvaCsp->registerInlineScript(); ?>
     ```
@@ -231,7 +232,7 @@ This reference documents the root causes, real-world symptoms, and verified fixe
 * **Fix (Response Path Binding):**
   - Bind all CSP processing and fallback decisions strictly to the **current request and response being sent to the browser**:
     - Hook into `controller_front_send_response_before`.
-    - Apply response processors (e.g. `Sutunam HeaderSplitter::afterRender()`, `LaminasCspHeaderProcessor::processHeaders()`).
+    - Apply response processors there (project example: a custom `HeaderSplitter::afterRender()` plugin, `LaminasCspHeaderProcessor::processHeaders()`). These are project-specific classes, not part of Hyvä core.
     - Ensure FPC hits do not create false-positive fallback logs.
 
 ---
@@ -258,7 +259,7 @@ This reference documents the root causes, real-world symptoms, and verified fixe
   1. **Pre-Push Static Gate:**
      - Run AST auditor to reject nondeterministic expressions (`uniqid`, `time`, `rand`) inside `<script>`.
   2. **Runtime Verification Under Cache Pressure:**
-     - **Cold cycle:** 5 concurrent requests (`curl` or benchmark) immediately after `bin/magento cache:flush`.
+     - **Cold cycle:** 5 concurrent requests (`curl` or benchmark) immediately after an FPC clean (`run.sh test-pressure <url> --flush`, local env only).
        - *Verify:* HTTP 200, valid `script-src` header present, no FPC race error.
      - **Warm cycle:** 40 repeated requests on the same URL.
        - *Verify:* Constant CSP header size (0 hash accumulation), persistent FPC hit.
